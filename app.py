@@ -250,3 +250,60 @@ try:
     from google.colab import files; files.download("churn_figures.zip")
 except Exception: print("Zip saved as churn_figures.zip in the file panel.")
 print("\nDONE. Copy ALL the text output above and paste it to Claude.")
+
+#PART2:
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+from scipy import stats
+from sklearn.model_selection import train_test_split, learning_curve
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+
+URL = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+raw = pd.read_csv(URL); df = raw.copy()
+df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce").fillna(0)
+df["Churn_flag"] = (df["Churn"] == "Yes").astype(int)
+df["SeniorCitizen"] = df["SeniorCitizen"].map({0:"No", 1:"Yes"})
+
+# 1) full normality p-values
+a = df.loc[df.Churn=="Yes","MonthlyCharges"]; b = df.loc[df.Churn=="No","MonthlyCharges"]
+print("Normality p churned:", stats.normaltest(a).pvalue, "| retained:", stats.normaltest(b).pvalue)
+
+# 2) Week 5 business numbers
+ch = df[df.Churn_flag==1]
+print("Monthly revenue lost:", round(ch["MonthlyCharges"].sum(),2), "| Annual:", round(ch["MonthlyCharges"].sum()*12,2))
+for r in [0.10,0.20,0.30]:
+    print(f"{int(r*100)}% fewer churners -> {int(len(ch)*r)} customers, annual revenue retained = {ch['MonthlyCharges'].sum()*12*r:,.0f}")
+print("Churners on month-to-month %:", round((ch.Contract=="Month-to-month").mean()*100,1))
+print("Churners with tenure<=12 %:", round((ch.tenure<=12).mean()*100,1))
+print("Churners on fiber %:", round((ch.InternetService=="Fiber optic").mean()*100,1))
+print("Churners paying electronic check %:", round((ch.PaymentMethod=="Electronic check").mean()*100,1))
+seg = df[(df.Contract=="Month-to-month")&(df.InternetService=="Fiber optic")&(df.tenure<=12)]
+print(f"Segment M2M+fiber+tenure<=12: n={len(seg)}, churn={seg.Churn_flag.mean()*100:.1f}%")
+seg2 = df[(df.Contract=="Month-to-month")&(df.PaymentMethod=="Electronic check")]
+print(f"Segment M2M+echeck: n={len(seg2)}, churn={seg2.Churn_flag.mean()*100:.1f}%")
+inet = df[df.InternetService!="No"]
+print("Mean monthly charge among internet customers, churned vs retained:",
+      inet.groupby("Churn")["MonthlyCharges"].mean().round(2).to_dict())
+
+# 3) learning curve numbers (Random Forest)
+d4 = df.drop(columns=["customerID","Churn"]).copy()
+for c in ["MultipleLines","OnlineSecurity","OnlineBackup","DeviceProtection","TechSupport","StreamingTV","StreamingMovies"]:
+    d4[c] = d4[c].replace({"No internet service":"No","No phone service":"No"})
+y = d4["Churn_flag"]; X = d4.drop(columns=["Churn_flag"])
+num = ["tenure","MonthlyCharges","TotalCharges"]; cat = [c for c in X.columns if c not in num]
+pre = ColumnTransformer([("num",StandardScaler(),num),("cat",OneHotEncoder(drop="if_binary",handle_unknown="ignore"),cat)])
+X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+rf = Pipeline([("pre",pre),("clf",RandomForestClassifier(n_estimators=300,max_depth=8,class_weight="balanced",random_state=42,n_jobs=-1))])
+sizes, trs, vas = learning_curve(rf, X_tr, y_tr, cv=5, scoring="roc_auc", train_sizes=np.linspace(.1,1,6), n_jobs=-1)
+print("Learning curve sizes:", sizes); print("Train AUC:", trs.mean(1).round(3)); print("Val AUC:", vas.mean(1).round(3))
+
+# 4) clearer Figure 1 for Week 1
+r_ = raw.copy(); r_["TC"] = pd.to_numeric(r_["TotalCharges"], errors="coerce"); miss = r_[r_["TC"].isna()]
+plt.figure(figsize=(7,4.5))
+plt.scatter(r_["tenure"], r_["TC"], s=6, alpha=.3, label="Customers with a valid TotalCharges")
+plt.scatter(miss["tenure"], [0]*len(miss), color="red", s=70, label="Blank TotalCharges (11 customers)")
+plt.xlabel("Tenure (months)"); plt.ylabel("TotalCharges"); plt.legend()
+plt.title("The 11 'missing' totals all belong to customers with tenure = 0")
+plt.savefig("w1_fig1b_blank_totalcharges.png", dpi=200, bbox_inches="tight"); plt.show()
